@@ -1,0 +1,307 @@
+
+<!DOCTYPE html>
+<html lang="my">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Movie Recap AI</title>
+
+<style>
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background: #0b1020;
+    color: #fff;
+    font-family: Arial, sans-serif;
+}
+
+.container {
+    max-width: 850px;
+    margin: 50px auto;
+    padding: 20px;
+}
+
+header {
+    text-align: center;
+    margin-bottom: 35px;
+}
+
+header h1 {
+    font-size: 32px;
+    color: #7c9cff;
+}
+
+header p { color: #aab3c8; }
+
+.panel {
+    background: #151d32;
+    border: 1px solid #293653;
+    padding: 25px;
+    border-radius: 18px;
+}
+
+.drop-area {
+    border: 2px dashed #526baf;
+    padding: 45px 15px;
+    border-radius: 15px;
+    text-align: center;
+    cursor: pointer;
+    background: #101a30;
+}
+
+.drop-area:hover {
+    background: #192747;
+}
+
+.drop-area h2 { font-size: 20px; }
+
+.drop-area p { color: #aab3c8; }
+
+input[type=file] { display: none; }
+
+video {
+    width: 100%;
+    max-height: 350px;
+    margin-top: 20px;
+    border-radius: 12px;
+    display: none;
+    background: #000;
+}
+
+button {
+    width: 100%;
+    padding: 15px;
+    margin-top: 20px;
+    border: none;
+    border-radius: 10px;
+    background: #557bff;
+    color: white;
+    font-size: 16px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+button:disabled {
+    opacity: .5;
+    cursor: not-allowed;
+}
+
+.progress-bg {
+    width: 100%;
+    height: 12px;
+    background: #293653;
+    border-radius: 20px;
+    margin-top: 20px;
+    overflow: hidden;
+}
+
+.progress {
+    width: 0%;
+    height: 100%;
+    background: #42d69b;
+    transition: width .2s;
+}
+
+.info {
+    margin-top: 20px;
+    padding: 15px;
+    border-radius: 10px;
+    background: #101a30;
+    overflow-wrap: anywhere;
+}
+
+.status {
+    color: #42d69b;
+    margin-top: 15px;
+}
+
+.error { color: #ff7777; }
+
+.small {
+    color: #8f9ab3;
+    font-size: 13px;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<header>
+    <h1>MOVIE RECAP AI</h1>
+    <p>AI Movie Recap & Burmese Voiceover Studio</p>
+</header>
+
+<div class="panel">
+
+<h2>01. Upload Your Video</h2>
+
+<label class="drop-area" for="videoFile">
+    <h2>Choose Your Video</h2>
+    <p>MP4 / MOV / MKV / WEBM / AVI</p>
+    <p class="small">Maximum size: 100 MB</p>
+</label>
+
+<input
+    type="file"
+    id="videoFile"
+    accept=".mp4,.mov,.mkv,.webm,.avi,.m4v,video/*"
+>
+
+<video id="preview" controls></video>
+
+<div class="info" id="fileInfo" style="display:none"></div>
+
+<button id="uploadBtn" disabled>
+    Upload Video
+</button>
+
+<div class="progress-bg">
+    <div class="progress" id="progress"></div>
+</div>
+
+<p id="progressText">0%</p>
+
+<div id="status" class="status"></div>
+
+<div class="info" id="result" style="display:none"></div>
+
+</div>
+</div>
+
+<script>
+const fileInput = document.getElementById("videoFile");
+const preview = document.getElementById("preview");
+const uploadBtn = document.getElementById("uploadBtn");
+const fileInfo = document.getElementById("fileInfo");
+const statusBox = document.getElementById("status");
+const progress = document.getElementById("progress");
+const progressText = document.getElementById("progressText");
+const result = document.getElementById("result");
+
+let selectedFile = null;
+let previewUrl = null;
+
+const maxSize = 100 * 1024 * 1024;
+
+fileInput.addEventListener("change", () => {
+    const file = fileInput.files[0];
+
+    if (!file) return;
+
+    const ext = file.name.split(".").pop().toLowerCase();
+    const allowed = [
+        "mp4", "mov", "mkv",
+        "webm", "avi", "m4v"
+    ];
+
+    if (!allowed.includes(ext)) {
+        showError("Unsupported video format.");
+        return;
+    }
+
+    if (file.size > maxSize) {
+        showError("ဗီဒီယိုအရွယ်အစား 100 MB ထက်ကျော်နေပါတယ်။");
+        return;
+    }
+
+    selectedFile = file;
+
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+
+    previewUrl = URL.createObjectURL(file);
+    preview.src = previewUrl;
+    preview.style.display = "block";
+
+    fileInfo.style.display = "block";
+    fileInfo.innerHTML =
+        "<b>File:</b> " + escapeHtml(file.name) +
+        "<br><b>Size:</b> " +
+        (file.size / 1024 / 1024).toFixed(2) + " MB";
+
+    uploadBtn.disabled = false;
+    statusBox.textContent = "";
+    result.style.display = "none";
+    progress.style.width = "0%";
+    progressText.textContent = "0%";
+});
+
+uploadBtn.addEventListener("click", () => {
+    if (!selectedFile) return;
+
+    uploadBtn.disabled = true;
+    statusBox.className = "status";
+    statusBox.textContent = "Uploading video...";
+
+    const formData = new FormData();
+    formData.append("file", selectedFile);
+
+    const xhr = new XMLHttpRequest();
+
+    xhr.open("POST", "/api/upload");
+
+    xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+            const percent = Math.round(
+                event.loaded / event.total * 100
+            );
+
+            progress.style.width = percent + "%";
+            progressText.textContent = percent + "%";
+        }
+    };
+
+    xhr.onload = () => {
+        let data;
+
+        try {
+            data = JSON.parse(xhr.responseText);
+        } catch {
+            data = {};
+        }
+
+        if (xhr.status >= 200 && xhr.status < 300 && data.success) {
+            statusBox.textContent = "Upload အောင်မြင်ပါပြီ။";
+            result.style.display = "block";
+            result.innerHTML =
+                "<b>Job ID:</b> " + escapeHtml(data.job_id) +
+                "<br><b>Filename:</b> " + escapeHtml(data.filename) +
+                "<br><b>Size:</b> " + data.size_mb + " MB" +
+                "<br><b>Status:</b> " + escapeHtml(data.status);
+
+        } else {
+            showError(data.detail || "Upload failed.");
+        }
+
+        uploadBtn.disabled = false;
+    };
+
+    xhr.onerror = () => {
+        showError("Server connection failed.");
+        uploadBtn.disabled = false;
+    };
+
+    xhr.send(formData);
+});
+
+function showError(message) {
+    statusBox.className = "status error";
+    statusBox.textContent = message;
+    uploadBtn.disabled = !selectedFile;
+}
+
+function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, char => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+    })[char]);
+}
+</script>
+
+</body>
+</html>
