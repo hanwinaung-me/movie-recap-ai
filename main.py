@@ -3,6 +3,9 @@ import os
 import uuid
 import time
 import mimetypes
+import io
+import wave
+import re
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
@@ -20,9 +23,11 @@ from google import genai
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 STATIC_DIR = BASE_DIR / "static"
+OUTPUT_DIR = BASE_DIR / "outputs"
 
 UPLOAD_DIR.mkdir(exist_ok=True)
 STATIC_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR.mkdir(exist_ok=True)
 
 MAX_FILE_SIZE = 100 * 1024 * 1024
 
@@ -33,6 +38,18 @@ ALLOWED_EXTENSIONS = {
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
+GEMINI_TTS_MODEL = os.getenv(
+    "GEMINI_TTS_MODEL",
+    "gemini-3.8-flash-tts"
+)
+GEMINI_TTS_VOICE = os.getenv(
+    "GEMINI_TTS_VOICE",
+    "Kore"
+)
+
+# Keep each Burmese text chunk safely below the TTS input limit.
+TTS_MAX_BYTES = 3000
+
 
 # ==========================================
 # FASTAPI APP
@@ -40,7 +57,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
 app = FastAPI(
     title="Movie Recap AI",
-    version="3.0.0"
+    version="4.0.0"
 )
 
 app.add_middleware(
@@ -72,9 +89,11 @@ def health():
         "success": True,
         "status": "OK",
         "service": "Movie Recap AI",
-        "version": "3.0.0",
+        "version": "4.0.0",
         "gemini_configured": bool(GEMINI_API_KEY),
-        "gemini_model": GEMINI_MODEL
+        "gemini_model": GEMINI_MODEL,
+        "tts_model": GEMINI_TTS_MODEL,
+        "tts_voice": GEMINI_TTS_VOICE
     }
 
 
@@ -139,7 +158,11 @@ async def upload_video(file: UploadFile = File(...)):
             "size_mb": round(total_size / (1024 * 1024), 2),
             "status": "UPLOADED",
             "recap_script": None,
-            "error": None
+            "error": None,
+
+            "voice_status": "NOT_STARTED",
+            "voice_url": None,
+            "voice_error": None
         }
 
         return {
@@ -162,6 +185,7 @@ async def upload_video(file: UploadFile = File(...)):
 
 # ==========================================
 # PROFESSIONAL BURMESE RECAP PROMPT
+# DO NOT CHANGE THIS APPROVED STYLE
 # ==========================================
 
 def build_recap_prompt():
@@ -386,7 +410,6 @@ def process_recap(job_id: str, video_path: str):
     client = None
 
     try:
-
         if not GEMINI_API_KEY:
             raise RuntimeError(
                 "GEMINI_API_KEY is not configured on the server."
@@ -415,10 +438,7 @@ def process_recap(job_id: str, video_path: str):
 
         JOBS[job_id]["status"] = "AI_PROCESSING"
 
-        # Wait for Gemini video processing
-
         for attempt in range(180):
-
             current_file = client.files.get(
                 name=remote_file.name
             )
@@ -468,18 +488,13 @@ def process_recap(job_id: str, video_path: str):
         JOBS[job_id]["status"] = "COMPLETED"
 
     except Exception as error:
-
         JOBS[job_id]["status"] = "FAILED"
         JOBS[job_id]["error"] = str(error)[:1000]
 
     finally:
-
         if remote_file is not None and client is not None:
-
             try:
-                client.files.delete(
-                    name=remote_file.name
-                )
+                client.files.delete(name=remote_file.name)
             except Exception:
                 pass
 
@@ -507,7 +522,6 @@ def start_recap(
         "AI_PROCESSING",
         "WRITING_SCRIPT"
     }:
-
         return {
             "success": True,
             "message": "Recap is already processing.",
@@ -516,7 +530,6 @@ def start_recap(
         }
 
     if job["status"] == "COMPLETED":
-
         return {
             "success": True,
             "message": "Recap already completed.",
@@ -527,7 +540,6 @@ def start_recap(
     video_path = None
 
     for extension in ALLOWED_EXTENSIONS:
-
         candidate = UPLOAD_DIR / f"{job_id}{extension}"
 
         if candidate.exists():
@@ -555,6 +567,308 @@ def start_recap(
         "job_id": job_id,
         "status": "QUEUED"
     }
+
+
+# ==========================================
+# TTS TEXT CHUNKING
+# Split by UTF-8 bytes, not character count.
+# ==========================================
+
+def split_text_for_tts(text: str, max_bytes: int = TTS_MAX_BYTES):
+
+    text = (text or "").strip()
+
+    if not text:
+        return []
+
+    # Keep natural sentence boundaries where possible.
+    sentences = re.split(r"(?<=[။!?])\s*|\n+", text)
+
+    chunks = []
+    current = ""
+
+    def add_piece(piece):
+        nonlocal current
+
+        piece = piece.strip()
+        if not piece:
+            return
+
+        candidate = current + (" " if current else "") + piece
+
+        if len(candidate.encode("utf-8")) <= max_bytes:
+            current = candidate
+            return
+
+        if current:
+            chunks.append(current)
+            current = ""
+
+        # Split unusually long sentences safely by Unicode character.
+        buffer = ""
+
+        for char in piece:
+            test = buffer + char
+
+            if len(test.encode("utf-8")) > max_bytes:
+                if buffer:
+                    chunks.append(buffer)
+                buffer = char
+            else:
+                buffer = test
+
+        current = buffer
+
+    for sentence in sentences:
+        add_piece(sentence)
+
+    if current:
+        chunks.append(current)
+
+    return chunks
+
+
+# ==========================================
+# GENERATE ONE BURMESE VOICE CHUNK
+# ==========================================
+
+def generate_voice_chunk(client, text: str) -> bytes:
+
+    response = client.models.generate_content(
+        model=GEMINI_TTS_MODEL,
+        contents=(
+            "Read the following Burmese movie recap exactly as written. "
+            "Use a warm, clear male storyteller voice. "
+            "Speak at a moderate pace with natural emotion. "
+            "Pronounce Burmese words clearly. "
+            "Do not translate, summarize, add words, or change the text.\n\n"
+            + text
+        ),
+        config={
+            "response_modalities": ["AUDIO"],
+            "speech_config": {
+                "voice_config": {
+                    "prebuilt_voice_config": {
+                        "voice_name": GEMINI_TTS_VOICE
+                    }
+                }
+            }
+        }
+    )
+
+    # Read the generated audio bytes from the first audio part.
+    audio_data = None
+
+    for part in (response.parts or []):
+        inline_data = getattr(part, "inline_data", None)
+
+        if inline_data and getattr(inline_data, "data", None):
+            audio_data = inline_data.data
+            break
+
+    if not audio_data:
+        raise RuntimeError(
+            "Gemini TTS returned no audio data."
+        )
+
+    if isinstance(audio_data, str):
+        import base64
+        audio_data = base64.b64decode(audio_data)
+
+    return audio_data
+
+
+# ==========================================
+# PROCESS COMPLETE VOICEOVER
+# ==========================================
+
+def process_voice(job_id: str):
+
+    try:
+        job = JOBS.get(job_id)
+
+        if not job:
+            return
+
+        if not GEMINI_API_KEY:
+            raise RuntimeError(
+                "GEMINI_API_KEY is not configured on the server."
+            )
+
+        recap_script = job.get("recap_script")
+
+        if not recap_script or not recap_script.strip():
+            raise RuntimeError(
+                "Recap script is empty. Generate the recap first."
+            )
+
+        job["voice_status"] = "PREPARING_TEXT"
+        job["voice_error"] = None
+        job["voice_url"] = None
+
+        chunks = split_text_for_tts(recap_script)
+
+        if not chunks:
+            raise RuntimeError(
+                "There is no text available for voice generation."
+            )
+
+        client = genai.Client(api_key=GEMINI_API_KEY)
+
+        wav_chunks = []
+        total_chunks = len(chunks)
+
+        for index, chunk in enumerate(chunks, start=1):
+
+            job["voice_status"] = (
+                f"GENERATING_{index}_OF_{total_chunks}"
+            )
+
+            audio_bytes = generate_voice_chunk(client, chunk)
+
+            # Gemini TTS normally returns a complete WAV file.
+            try:
+                with wave.open(io.BytesIO(audio_bytes), "rb") as wav:
+                    params = wav.getparams()
+                    frames = wav.readframes(wav.getnframes())
+
+                wav_chunks.append((params, frames))
+
+            except wave.Error as error:
+                raise RuntimeError(
+                    "TTS audio was not a valid WAV file: " + str(error)
+                )
+
+        if not wav_chunks:
+            raise RuntimeError(
+                "No audio chunks were generated."
+            )
+
+        # All chunks must share the same audio format.
+        first_params = wav_chunks[0][0]
+
+        for params, frames in wav_chunks:
+            if (
+                params.nchannels != first_params.nchannels
+                or params.sampwidth != first_params.sampwidth
+                or params.framerate != first_params.framerate
+                or params.comptype != first_params.comptype
+            ):
+                raise RuntimeError(
+                    "Audio format changed between TTS chunks."
+                )
+
+        output_path = OUTPUT_DIR / f"{job_id}.wav"
+
+        with wave.open(str(output_path), "wb") as output_wav:
+            output_wav.setnchannels(first_params.nchannels)
+            output_wav.setsampwidth(first_params.sampwidth)
+            output_wav.setframerate(first_params.framerate)
+            output_wav.setcomptype(
+                first_params.comptype,
+                first_params.compname
+            )
+
+            for params, frames in wav_chunks:
+                output_wav.writeframes(frames)
+
+        job["voice_url"] = f"/api/jobs/{job_id}/voice/audio"
+        job["voice_status"] = "COMPLETED"
+
+    except Exception as error:
+        job = JOBS.get(job_id)
+
+        if job:
+            job["voice_status"] = "FAILED"
+            job["voice_error"] = str(error)[:1000]
+            job["voice_url"] = None
+
+
+# ==========================================
+# START VOICE GENERATION
+# ==========================================
+
+@app.post("/api/jobs/{job_id}/voice")
+def start_voice(
+    job_id: str,
+    background_tasks: BackgroundTasks
+):
+
+    job = JOBS.get(job_id)
+
+    if not job:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found. Please upload the video again."
+        )
+
+    if job.get("status") != "COMPLETED":
+        raise HTTPException(
+            status_code=400,
+            detail="Generate the Burmese recap script first."
+        )
+
+    voice_status = job.get("voice_status", "NOT_STARTED")
+
+    if voice_status == "COMPLETED":
+        return {
+            "success": True,
+            "message": "Voice already generated.",
+            "voice_status": "COMPLETED",
+            "voice_url": job.get("voice_url")
+        }
+
+    if voice_status.startswith("GENERATING_") or voice_status == "PREPARING_TEXT":
+        return {
+            "success": True,
+            "message": "Voice generation is already running.",
+            "voice_status": voice_status
+        }
+
+    job["voice_status"] = "QUEUED"
+    job["voice_error"] = None
+
+    background_tasks.add_task(
+        process_voice,
+        job_id
+    )
+
+    return {
+        "success": True,
+        "message": "Voice generation started.",
+        "job_id": job_id,
+        "voice_status": "QUEUED"
+    }
+
+
+# ==========================================
+# DOWNLOAD / PLAY GENERATED VOICE
+# ==========================================
+
+@app.get("/api/jobs/{job_id}/voice/audio")
+def get_voice_audio(job_id: str):
+
+    job = JOBS.get(job_id)
+
+    if not job:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found."
+        )
+
+    output_path = OUTPUT_DIR / f"{job_id}.wav"
+
+    if not output_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Voice audio is not ready."
+        )
+
+    return FileResponse(
+        output_path,
+        media_type="audio/wav",
+        filename=f"movie-recap-{job_id}.wav"
+    )
 
 
 # ==========================================
