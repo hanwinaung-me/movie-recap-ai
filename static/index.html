@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="my">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Movie Recap AI Studio</title>
+
+<style>
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background: #0b1020;
+    color: white;
+    font-family: Arial, sans-serif;
+}
+
+.container {
+    max-width: 900px;
+    margin: auto;
+    padding: 25px 16px 60px;
+}
+
+header {
+    text-align: center;
+    margin: 20px 0 35px;
+}
+
+header h1 {
+    color: #829cff;
+    font-size: 30px;
+}
+
+header p { color: #9ba8c4; }
+
+.panel {
+    background: #151d32;
+    border: 1px solid #293653;
+    border-radius: 16px;
+    padding: 22px;
+    margin-bottom: 20px;
+}
+
+.drop-area {
+    display: block;
+    padding: 38px 15px;
+    border: 2px dashed #526baf;
+    border-radius: 14px;
+    text-align: center;
+    cursor: pointer;
+    background: #101a30;
+}
+
+.drop-area:hover { background: #1b2947; }
+
+input[type=file] { display: none; }
+
+video {
+    width: 100%;
+    max-height: 330px;
+    margin-top: 20px;
+    background: black;
+    border-radius: 10px;
+    display: none;
+}
+
+button {
+    width: 100%;
+    padding: 15px;
+    border: 0;
+    border-radius: 10px;
+    background: #557bff;
+    color: white;
+    font-size: 16px;
+    font-weight: bold;
+    margin-top: 18px;
+    cursor: pointer;
+}
+
+button:disabled {
+    opacity: .5;
+    cursor: not-allowed;
+}
+
+.progress-bg {
+    height: 11px;
+    background: #293653;
+    border-radius: 20px;
+    overflow: hidden;
+    margin-top: 20px;
+}
+
+.progress {
+    height: 100%;
+    width: 0;
+    background: #42d69b;
+    transition: width .2s;
+}
+
+.info {
+    background: #101a30;
+    padding: 14px;
+    border-radius: 10px;
+    margin-top: 15px;
+    overflow-wrap: anywhere;
+}
+
+.status { color: #42d69b; }
+
+.error { color: #ff7777; }
+
+#scriptOutput {
+    white-space: pre-wrap;
+    line-height: 1.9;
+    overflow-wrap: anywhere;
+    color: #e5eaf7;
+    font-size: 15px;
+}
+
+#recapPanel,
+#voicePanel {
+    display: none;
+}
+
+.small {
+    font-size: 12px;
+    color: #8f9ab3;
+}
+
+audio {
+    display: block;
+    width: 100%;
+    margin-top: 18px;
+}
+
+.download-link {
+    display: block;
+    text-align: center;
+    margin-top: 15px;
+    padding: 13px;
+    border-radius: 10px;
+    background: #1d3155;
+    color: #a9c1ff;
+    text-decoration: none;
+    font-weight: bold;
+}
+
+.download-link:hover {
+    background: #294575;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<header>
+<h1>MOVIE RECAP AI</h1>
+<p>AI Movie Analysis & Burmese Storytelling Studio</p>
+</header>
+
+<!-- 01 VIDEO UPLOAD -->
+
+<div class="panel">
+
+<h2>01. Video Upload</h2>
+
+<label class="drop-area" for="videoFile">
+<h3>Choose Your Movie</h3>
+<p>MP4 / MOV / MKV / WEBM / AVI</p>
+<p class="small">Maximum 100 MB</p>
+</label>
+
+<input type="file" id="videoFile"
+accept=".mp4,.mov,.mkv,.webm,.avi,.m4v,video/*">
+
+<video id="preview" controls></video>
+
+<div id="fileInfo" class="info" style="display:none"></div>
+
+<button id="uploadBtn" disabled>
+Upload Video
+</button>
+
+<div class="progress-bg">
+<div class="progress" id="progress"></div>
+</div>
+
+<p id="progressText">0%</p>
+
+<p id="uploadStatus" class="status"></p>
+
+<div id="uploadResult" class="info"
+style="display:none"></div>
+
+</div>
+
+
+<!-- 02 AI RECAP -->
+
+<div class="panel" id="aiPanel">
+
+<h2>02. AI Story Analysis</h2>
+
+<p class="small">
+Gemini AI will analyze your uploaded video
+and create a Burmese movie recap.
+</p>
+
+<button id="recapBtn" disabled>
+Generate Burmese Recap
+</button>
+
+<p id="aiStatus" class="status"></p>
+
+</div>
+
+
+<!-- 03 RECAP SCRIPT -->
+
+<div class="panel" id="recapPanel">
+
+<h2>03. Burmese Recap Script</h2>
+
+<div id="scriptOutput"></div>
+
+<button id="copyBtn">
+Copy Recap Script
+</button>
+
+</div>
+
+
+<!-- 04 AI VOICE -->
+
+<div class="panel" id="voicePanel">
+
+<h2>04. AI Burmese Voiceover</h2>
+
+<p class="small">
+Generate a natural Burmese storyteller voice
+from your completed recap script.
+</p>
+
+<button id="voiceBtn">
+Generate AI Voice
+</button>
+
+<p id="voiceStatus" class="status"></p>
+
+<audio id="voicePlayer" controls style="display:none"></audio>
+
+<a id="voiceDownload"
+class="download-link"
+style="display:none"
+download>
+Download Voice (WAV)
+</a>
+
+</div>
+
+</div>
+
+
+<script>
+const fileInput = document.getElementById("videoFile");
+const preview = document.getElementById("preview");
+const uploadBtn = document.getElementById("uploadBtn");
+const recapBtn = document.getElementById("recapBtn");
+const voiceBtn = document.getElementById("voiceBtn");
+
+const progress = document.getElementById("progress");
+const progressText = document.getElementById("progressText");
+
+const uploadStatus = document.getElementById("uploadStatus");
+const aiStatus = document.getElementById("aiStatus");
+const voiceStatus = document.getElementById("voiceStatus");
+
+const fileInfo = document.getElementById("fileInfo");
+const uploadResult = document.getElementById("uploadResult");
+
+const recapPanel = document.getElementById("recapPanel");
+const scriptOutput = document.getElementById("scriptOutput");
+
+const voicePanel = document.getElementById("voicePanel");
+const voicePlayer = document.getElementById("voicePlayer");
+const voiceDownload = document.getElementById("voiceDownload");
+
+let selectedFile = null;
+let jobId = null;
+let previewUrl = null;
+
+let recapPolling = false;
+let voicePolling = false;
+
+const maxSize = 100 * 1024 * 1024;
+
+function setError(element, message) {
+    element.textContent = message;
+    element.className = "error";
+}
+
+function setStatus(element, message) {
+    element.textContent = message;
+    element.className = "status";
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+
+// ==========================================
+// SELECT VIDEO
+// ==========================================
+
+fileInput.addEventListener("change", () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+
+    const extension = file.name.split(".").pop().toLowerCase();
+
+    const allowed = [
+        "mp4", "mov", "mkv", "webm", "avi", "m4v"
+    ];
+
+    if (!allowed.includes(extension)) {
+        setError(uploadStatus, "Unsupported video format.");
+        return;
+    }
+
+    if (file.size > maxSize) {
+        setError(
+            uploadStatus,
+            "ဗီဒီယိုအရွယ်အစား 100 MB ထက်ကျော်နေပါတယ်။"
+        );
+        return;
+    }
+
+    selectedFile = file;
+    jobId = null;
+
+    recapBtn.disabled = true;
+    voiceBtn.disabled = true;
+
+    recapPanel.style.display = "none";
+    voicePanel.style.display = "none";
+
+    uploadResult.style.display = "none";
+
+    voicePlayer.pause();
+    voicePlayer.removeAttribute("src");
+    voicePlayer.load();
+
+    if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+    }
+
+    previewUrl = URL.createObjectURL(file);
+
+    preview.src = previewUrl;
+    preview.style.display = "block";
+
+    fileInfo.style.display = "block";
+
+    fileInfo.textContent =
+        "File: " + file.name +
+        " | Size: " +
+        (file.size / 1024 / 1024).toFixed(2) + " MB";
+
+    uploadBtn.disabled = false;
+
+    setStatus(uploadStatus, "");
+    setStatus(aiStatus, "");
+    setStatus(voiceStatus, "");
+
+    progress.style.width = "0%";
+    progressText.textContent = "0%";
+});
+
+
+// ==========================================
+// UPLOAD VIDEO
+// ==========================================
+
+uploadBtn.addEventListener("click", () => {
+    if (!selectedFile) return;
+
+    uploadBtn.disabled = true;
+    recapBtn.disabled = true;
+
+    setStatus(uploadStatus, "Uploading video...");
+
+    const formData = new FormData();
+    formData.append("file", selectedFile);
+
+    const xhr = new XMLHttpRequest();
+
+    xhr.open("POST", "/api/upload");
+
+    xhr.upload.onprogress = event => {
+        if (event.lengthComputable) {
+            const percent = Math.round(
+                event.loaded / event.total * 100
+            );
+
+            progress.style.width = percent + "%";
+            progressText.textContent = percent + "%";
+        }
+    };
+
+    xhr.onload = () => {
+        let data = {};
+
+        try {
+            data = JSON.parse(xhr.responseText);
+        } catch {}
+
+        if (
+            xhr.status >= 200 &&
+            xhr.status < 300 &&
+            data.success
+        ) {
+            jobId = data.job_id;
+
+            setStatus(
+                uploadStatus,
+                "Upload အောင်မြင်ပါပြီ။"
+            );
+
+            uploadResult.style.display = "block";
+
+            uploadResult.textContent =
+                "Job ID: " + jobId +
+                " | File: " + data.filename +
+                " | Size: " + data.size_mb + " MB";
+
+            recapBtn.disabled = false;
+
+        } else {
+            setError(
+                uploadStatus,
+                data.detail || "Upload failed."
+            );
+        }
+
+        uploadBtn.disabled = false;
+    };
+
+    xhr.onerror = () => {
+        setError(
+            uploadStatus,
+            "Server connection failed."
+        );
+
+        uploadBtn.disabled = false;
+    };
+
+    xhr.send(formData);
+});
+
+
+// ==========================================
+// GENERATE BURMESE RECAP
+// ==========================================
+
+recapBtn.addEventListener("click", async () => {
+    if (!jobId || recapPolling) return;
+
+    recapPolling = true;
+    recapBtn.disabled = true;
+
+    setStatus(
+        aiStatus,
+        "AI ကို ဗီဒီယိုပို့နေပါတယ်..."
+    );
+
+    try {
+        const start = await fetch(
+            "/api/jobs/" + encodeURIComponent(jobId) + "/recap",
+            { method: "POST" }
+        );
+
+        const startData = await start.json();
+
+        if (!start.ok) {
+            throw new Error(
+                startData.detail || "Could not start recap."
+            );
+        }
+
+        let completed = false;
+
+        while (!completed) {
+            await sleep(5000);
+
+            const response = await fetch(
+                "/api/jobs/" + encodeURIComponent(jobId)
+            );
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(
+                    data.detail || "Could not check job."
+                );
+            }
+
+            setStatus(
+                aiStatus,
+                "AI Status: " + data.status
+            );
+
+            if (data.status === "COMPLETED") {
+                scriptOutput.textContent = data.recap_script || "";
+
+                recapPanel.style.display = "block";
+                voicePanel.style.display = "block";
+
+                setStatus(
+                    aiStatus,
+                    "မြန်မာ Recap Script အောင်မြင်စွာ ထုတ်ပြီးပါပြီ။"
+                );
+
+                voiceBtn.disabled = false;
+                completed = true;
+            }
+
+            if (data.status === "FAILED") {
+                throw new Error(
+                    data.error || "AI processing failed."
+                );
+            }
+        }
+
+    } catch (error) {
+        setError(aiStatus, error.message);
+
+    } finally {
+        recapPolling = false;
+        recapBtn.disabled = false;
+    }
+});
+
+
+// ==========================================
+// COPY RECAP SCRIPT
+// ==========================================
+
+document.getElementById("copyBtn").addEventListener(
+    "click",
+    async () => {
+        try {
+            await navigator.clipboard.writeText(
+                scriptOutput.textContent
+            );
+
+            document.getElementById("copyBtn").textContent =
+                "Copied Successfully";
+
+        } catch {
+            setError(
+                aiStatus,
+                "Copy မရပါ။ Script ကို ဖိပြီး Select လုပ်ကူးယူပါ။"
+            );
+        }
+    }
+);
+
+
+// ==========================================
+// GENERATE AI VOICE
+// ==========================================
+
+voiceBtn.addEventListener("click", async () => {
+    if (!jobId || voicePolling) return;
+
+    voicePolling = true;
+    voiceBtn.disabled = true;
+
+    voicePlayer.style.display = "none";
+    voiceDownload.style.display = "none";
+
+    setStatus(
+        voiceStatus,
+        "AI အသံထုတ်လုပ်မှု စတင်နေပါတယ်..."
+    );
+
+    try {
+        const start = await fetch(
+            "/api/jobs/" + encodeURIComponent(jobId) + "/voice",
+            { method: "POST" }
+        );
+
+        const startData = await start.json();
+
+        if (!start.ok) {
+            throw new Error(
+                startData.detail || "Could not start voice generation."
+            );
+        }
+
+        let completed = false;
+
+        while (!completed) {
+            await sleep(4000);
+
+            const response = await fetch(
+                "/api/jobs/" + encodeURIComponent(jobId)
+            );
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(
+                    data.detail || "Could not check voice status."
+                );
+            }
+
+            const currentStatus =
+                data.voice_status || "NOT_STARTED";
+
+            setStatus(
+                voiceStatus,
+                "Voice Status: " + currentStatus
+            );
+
+            if (currentStatus === "COMPLETED") {
+                const audioUrl =
+                    data.voice_url ||
+                    (
+                        "/api/jobs/" +
+                        encodeURIComponent(jobId) +
+                        "/voice/audio"
+                    );
+
+                voicePlayer.src = audioUrl;
+                voicePlayer.style.display = "block";
+
+                voiceDownload.href = audioUrl;
+                voiceDownload.style.display = "block";
+                voiceDownload.textContent = "Download Voice (WAV)";
+
+                setStatus(
+                    voiceStatus,
+                    "မြန်မာ AI အသံ အောင်မြင်စွာ ထုတ်ပြီးပါပြီ။"
+                );
+
+                completed = true;
+            }
+
+            if (currentStatus === "FAILED") {
+                throw new Error(
+                    data.voice_error || "Voice generation failed."
+                );
+            }
+        }
+
+    } catch (error) {
+        setError(voiceStatus, error.message);
+
+    } finally {
+        voicePolling = false;
+        voiceBtn.disabled = false;
+    }
+});
+
+</script>
+
+</body>
+</html>
